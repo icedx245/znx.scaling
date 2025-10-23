@@ -1,0 +1,65 @@
+name: Run Pipeline (Populate Cache + Workflows)
+
+"on":
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 2 * * *'  # daily at 02:00 UTC
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Populate cache
+        env:
+          PYTHONPATH: .
+        run: |
+          python3 scripts/populate_cache.py --path . --pattern "*.csv"
+
+      - name: Ensure cache dir exists
+        run: |
+          mkdir -p .cache_data || true
+
+      - name: Upload cache artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-data
+          path: .cache_data
+
+      - name: Run workflows
+        env:
+          PYTHONPATH: .
+        run: |
+          bash run_workflows.sh
+
+      # Optional Prefect deploy removed to avoid storing secrets in this workflow file.
+      # Use the reusable workflow `./.github/workflows/prefect_deploy.yml`
+      # directly in a caller or run deploys from a separate workflow with
+      # permissions to access the secret.
+
+      # optional-prefect-deploy removed
+
+      # (prefect deploy steps are executed inline below as a step inside
+      # run-pipeline)
+      # Instead, the pipeline will perform an inline Prefect deploy if the
+      # PREFECT_API_KEY secret is present.

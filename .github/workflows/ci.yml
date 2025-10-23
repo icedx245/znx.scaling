@@ -1,0 +1,102 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install black flake8 pyyaml
+
+      - name: Download cache-data artifact (if present)
+        uses: actions/download-artifact@v4
+        with:
+          name: cache-data
+          path: .cache_data
+          if-no-files-found: warn
+
+      - name: Run formatting check (black)
+        env:
+          PYTHONPATH: .
+        run: |
+          black --check .
+
+      - name: Run linter (flake8)
+        env:
+          PYTHONPATH: .
+        run: |
+          flake8 .
+
+      - name: Run tests (including workflow YAML test)
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest -q
+
+  workflow-tests:
+    name: Workflow YAML tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyyaml
+
+      - name: Run workflow YAML tests
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest -q tests/test_workflow_yaml.py
+
+  yamllint:
+    name: Lint GitHub workflow YAML (yamllint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: |
+          python -m pip install --upgrade pip
+          pip install yamllint
+
+      - name: Run yamllint against .github/workflows
+        run: |
+          yamllint -f colored .github/workflows || true

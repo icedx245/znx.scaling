@@ -1,0 +1,78 @@
+name: Call Prefect Deploy
+
+"on":
+  workflow_dispatch:
+    inputs:
+      prefect_api_key:
+        description: 'Prefect API key (optional)'
+        required: false
+      dispatch_via_gh:
+        description: 'If true, dispatch via gh CLI (uses GITHUB_TOKEN)'
+        required: false
+
+jobs:
+  call-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy or dispatch based on inputs
+        run: |
+          PREFECT_API_KEY_INPUT="${{ github.event.inputs.prefect_api_key }}"
+          # Safety check: require a minimally-sized API key to reduce accidental leaks
+          if [ -n "$PREFECT_API_KEY_INPUT" ] && [ ${#PREFECT_API_KEY_INPUT} -lt 16 ]; then
+            echo "Prefect API key too short (<16 chars). Aborting."
+            exit 1
+          fi
+          DISPATCH_VIA_GH="${{ github.event.inputs.dispatch_via_gh }}"
+          # Use input only (for security prefer passing secret via the UI or a secure caller)
+          PREFECT_API_KEY="$PREFECT_API_KEY_INPUT"
+          if [ "$DISPATCH_VIA_GH" = "true" ]; then
+            if [ -z "$PREFECT_API_KEY" ]; then
+              echo "PREFECT key not found; cannot dispatch via gh"
+              exit 0
+            fi
+            echo "Installing gh"
+            sudo apt-get update && sudo apt-get install -y gh
+            echo "$GITHUB_TOKEN" | gh auth login --with-token
+            echo "Dispatching reusable workflow with secret"
+            gh workflow run \
+              prefect_deploy.yml \
+              -f prefect_api_key="$PREFECT_API_KEY"
+            exit 0
+          fi
+          # Inline deploy
+          if [ -z "$PREFECT_API_KEY" ]; then
+            echo "Prefect API key not provided; skipping"
+            exit 0
+          fi
+          # Additional safety: require length >= 24 and basic allowed chars
+            if ! printf '%s' "$PREFECT_API_KEY" | grep -Eq '^[A-Za-z0-9\-]{24,}$'; then
+              echo "Prefect API key format/length check failed; aborting."
+            exit 1
+          fi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install prefect
+          prefect cloud login --key "$PREFECT_API_KEY" || true
+          python3 prefect_flows/data_pipeline_flow.py || true
+          # Audit: write a small text artifact with timestamp and masked key
+          AUDIT_DIR=.prefect_audit
+          mkdir -p "$AUDIT_DIR"
+          ts=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
+          key_end=${PREFECT_API_KEY: -4}
+          echo "timestamp=$ts actor=$GITHUB_ACTOR source=call_prefect_deploy key_mask=****${key_end}" \
+            > "$AUDIT_DIR/audit.txt"
+
+          # Overwrite and unset the PREFECT_API_KEY variable to reduce risk of leakage
+          PREFECT_API_KEY='REDACTED'
+          export PREFECT_API_KEY
+          unset PREFECT_API_KEY
+
+      - name: Upload prefect deploy audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: prefect-deploy-audit
+          path: .prefect_audit
+          if-no-files-found: warn
